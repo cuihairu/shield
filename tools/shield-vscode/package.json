@@ -1,0 +1,85 @@
+{
+  "name": "shield-vscode",
+  "displayName": "Shield DevTools",
+  "description": "Attach to a running shield node: process curves, live logs, and the loaded Lua script face",
+  "version": "0.1.0",
+  "publisher": "shield-dev",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cuihairu/shield.git",
+    "directory": "tools/shield-vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "shield.attach",
+        "title": "Shield: Attach to Node"
+      },
+      {
+        "command": "shield.detach",
+        "title": "Shield: Detach"
+      },
+      {
+        "command": "shield.openPanel",
+        "title": "Shield: Open DevTools Panel"
+      }
+    ],
+    "configuration": {
+      "title": "Shield DevTools",
+      "properties": {
+        "shield.opsUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8080",
+          "description": "Base URL of the node's ops HTTP server (engine config http.host:http.port; requires http.enabled=true)."
+        },
+        "shield.opsToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for the ops-wide auth gate (engine config http.ops_auth_token)."
+        },
+        "shield.logFile": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the node's log file (engine config log.file.path; requires log.file.enabled=true)."
+        },
+        "shield.procPid": {
+          "type": "number",
+          "default": 0,
+          "description": "Optional node pid for process-level CPU/RSS sampling when the ops HTTP face is off."
+        },
+        "shield.metricsIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "Metrics poll interval in milliseconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit",
+    "test": "node test/smoke.mjs",
+    "package": "npm run compile && vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@shield/shield-devcore": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "5.9.3"
+  }
+}

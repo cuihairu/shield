@@ -129,5 +129,10 @@ build-cov/
 console/dist/
 console/tsconfig.tsbuildinfo
 
+# IDE devtools build output (tools/shield-*)
+tools/shield-vscode/dist/
+tools/shield-vscode/tsconfig.tsbuildinfo
+*.vsix
+
 # FIX-WEB-13 browser acceptance evidence (regenerated per run)
 tests/acceptance/e2e/artifacts/

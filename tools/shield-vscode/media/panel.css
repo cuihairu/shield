@@ -1,0 +1,222 @@
+/* [SHIELD_VSCODE] DevTools panel styles (theme-aware via VS Code CSS vars). */
+
+:root {
+  --shield-curve: #4fc1ff;
+}
+
+body {
+  padding: 8px 12px 16px;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+.mono {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.dim {
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+#header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+}
+
+.pill {
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pill-off,
+.pill-detached {
+  background: rgba(128, 128, 128, 0.25);
+}
+
+.pill-attached {
+  background: rgba(76, 175, 80, 0.35);
+}
+
+.pill-degraded {
+  background: rgba(255, 193, 7, 0.35);
+}
+
+.pill-detaching {
+  background: rgba(128, 128, 128, 0.25);
+}
+
+.metrics {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.chart-card {
+  flex: 1 1 280px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+canvas {
+  width: 100%;
+  height: 120px;
+  display: block;
+}
+
+section {
+  margin-top: 12px;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+
+td.err {
+  color: var(--vscode-errorForeground, #f66);
+}
+
+a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.log-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-weight: 400;
+}
+
+input,
+select,
+button {
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.4));
+  border-radius: 2px;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+#log-filter {
+  width: 160px;
+}
+
+#log-search {
+  width: 160px;
+}
+
+button {
+  cursor: pointer;
+}
+
+.wrap-toggle {
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+#log-view {
+  height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  padding: 4px 0;
+  background: var(--vscode-editor-background);
+}
+
+.log-line {
+  padding: 0 8px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-line.nowrap {
+  white-space: pre;
+}
+
+.log-cont {
+  opacity: 0.65;
+  padding-left: 24px;
+}
+
+.log-time {
+  opacity: 0.6;
+  margin-right: 8px;
+}
+
+.log-level {
+  display: inline-block;
+  width: 52px;
+  font-weight: 700;
+  font-size: 10px;
+}
+
+.lvl-error .log-level,
+.lvl-fatal .log-level {
+  color: var(--vscode-errorForeground, #f66);
+}
+
+.lvl-warning .log-level {
+  color: var(--vscode-editorWarning-foreground, #e5c07b);
+}
+
+.lvl-debug .log-level {
+  color: var(--vscode-descriptionForeground);
+}
+
+.log-logger {
+  opacity: 0.8;
+  margin-right: 8px;
+}
+
+.log-msg mark {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 192, 81, 0.5));
+  color: inherit;
+}

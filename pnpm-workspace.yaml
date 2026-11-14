@@ -1,9 +1,13 @@
 packages:
   - docs
   - console
+  - tools/shield-devcore
+  - tools/shield-vscode
 
 allowBuilds:
   esbuild: true
+  "@vscode/vsce-sign": true
+  keytar: true
 
 overrides:
   vite: 6.4.3
