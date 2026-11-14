@@ -10,6 +10,10 @@ export interface OpsHttpOptions {
   /// Bearer token for the ops-wide gate (http.ops_auth_token). Omit only
   /// when the node sets http.ops_allow_unauthenticated=true.
   token?: string;
+  /// Bearer token for /ops/eval and /ops/profile (http.profile_token and
+  /// http.eval_token live behind their own gates, which must match this
+  /// single Authorization header; unset means those endpoints cannot work).
+  profileToken?: string;
   /// Per-request timeout in ms (default 4000; the engine answers most
   /// endpoints within a 2s actor-mesh wait).
   timeoutMs?: number;
@@ -41,6 +45,49 @@ export interface PromSnapshot {
   /// flat sample lookup by rendered "family{label=value,...}" name
   byName: Map<string, PromSample>;
   text: string;
+}
+
+export interface ProfileRequest {
+  action: 'start' | 'stop' | 'report' | 'status';
+  /// Required for action=start.
+  service?: string;
+  /// 1..60000 (engine validation).
+  duration_ms?: number;
+  /// >=1 samples per second granularity knob.
+  interval?: number;
+}
+
+/// One node of the engine's sampling call tree (export_node in
+/// src/lua/profile_session.cpp): pct is the share of total samples.
+export interface ProfileReportNode {
+  what: string;
+  name: string;
+  source: string;
+  line: number;
+  tail: boolean;
+  hits: number;
+  pct: number;
+  children: ProfileReportNode[];
+}
+
+export interface ProfileResponse {
+  active?: boolean;
+  service?: string;
+  duration_ms?: number;
+  interval?: number;
+  started?: boolean;
+  started_at?: number;
+  stopped_at?: number;
+  elapsed_ms?: number;
+  /// Present in stop/report responses (finish_report in
+  /// src/lua/profile_session.cpp): total hook samples and the call-tree
+  /// roots (each with recursive children), sorted by hits.
+  total_samples?: number;
+  truncated_frames?: number;
+  dropped_samples?: number;
+  frames?: ProfileReportNode[];
+  slow_calls?: unknown;
+  [key: string]: unknown;
 }
 
 export interface LuaServiceDetail {
@@ -218,14 +265,24 @@ interface Envelope<T> {
 export class OpsHttpClient {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly profileToken: string;
   private readonly timeoutMs: number;
   private readonly headers: Record<string, string>;
 
   constructor(options: OpsHttpOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.token = options.token ?? '';
+    this.profileToken = options.profileToken ?? '';
     this.timeoutMs = options.timeoutMs ?? 4000;
     this.headers = this.token ? { authorization: `Bearer ${this.token}` } : {};
+  }
+
+  /// Headers for the profile/eval gates: the endpoint's own token is the
+  /// authorization there (a single header cannot carry both tokens).
+  private profileHeaders(): Record<string, string> {
+    return this.profileToken
+      ? { authorization: `Bearer ${this.profileToken}`, 'content-type': 'application/json' }
+      : { 'content-type': 'application/json' };
   }
 
   get base(): string {
@@ -242,6 +299,29 @@ export class OpsHttpClient {
       });
       if (!res.ok) {
         throw new OpsHttpError(`GET ${path} -> ${res.status}`, res.status);
+      }
+      return (await res.json()) as Envelope<unknown>;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async postJson(
+    path: string,
+    body: unknown,
+    headers?: Record<string, string>,
+  ): Promise<Envelope<unknown>> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: headers ?? { ...this.headers, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new OpsHttpError(`POST ${path} -> ${res.status}`, res.status);
       }
       return (await res.json()) as Envelope<unknown>;
     } finally {
@@ -338,6 +418,27 @@ export class OpsHttpClient {
     const names = await this.services();
     const details = await Promise.all(names.map((n) => this.serviceDetail(n)));
     return details.filter((d): d is LuaServiceDetail => d !== null);
+  }
+
+  /// POST /ops/profile — the sampling profiler control surface (opt-in,
+  /// gated by http.profile_token, a separate token from the ops-wide gate).
+  /// actions: start (needs service), stop, report, status.
+  async profile(
+    body: ProfileRequest,
+  ): Promise<ProfileResponse> {
+    const envelope = await this.postJson('/ops/profile', body, this.profileHeaders());
+    return envelope.data as ProfileResponse;
+  }
+
+  /// One-shot sampling: start a session for `durationMs` on `service`,
+  /// wait it out, then fetch the report.
+  async sampleOnce(
+    service: string,
+    durationMs = 3000,
+  ): Promise<ProfileResponse> {
+    await this.profile({ action: 'start', service, duration_ms: durationMs });
+    await new Promise((resolve) => setTimeout(resolve, durationMs + 300));
+    return await this.profile({ action: 'report' });
   }
 }
 

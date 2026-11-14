@@ -47,6 +47,11 @@
           "default": "",
           "description": "Bearer token for the ops-wide auth gate (engine config http.ops_auth_token)."
         },
+        "shield.profileToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for the opt-in /ops/profile sampler gate (engine config http.profile_token; also used for /ops/eval)."
+        },
         "shield.logFile": {
           "type": "string",
           "default": "",

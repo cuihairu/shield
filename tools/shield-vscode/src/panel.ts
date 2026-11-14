@@ -5,11 +5,23 @@
 
 import * as vscode from 'vscode';
 
-import type { LuaServiceEntry, LogRecord, MetricsSample, SessionStatus } from '@shield/shield-devcore';
+import type {
+  LuaServiceEntry,
+  LogRecord,
+  MetricsSample,
+  ProfileResponse,
+  SessionStatus,
+} from '@shield/shield-devcore';
 
 export interface ShieldPanelMessage {
   type: 'openScript';
   path: string;
+}
+
+export interface ProfilePanelMessage {
+  type: 'profileStart';
+  service: string;
+  durationMs: number;
 }
 
 export class ShieldPanel {
@@ -17,11 +29,13 @@ export class ShieldPanel {
 
   private readonly panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
-  private onDidReceive: ((message: ShieldPanelMessage) => void) | undefined;
+  private onDidReceive:
+    | ((message: ShieldPanelMessage | ProfilePanelMessage) => void)
+    | undefined;
 
   public static createOrShow(
     extensionUri: vscode.Uri,
-    onMessage: (message: ShieldPanelMessage) => void,
+    onMessage: (message: ShieldPanelMessage | ProfilePanelMessage) => void,
   ): ShieldPanel {
     if (ShieldPanel.activePanel) {
       ShieldPanel.activePanel.panel.reveal(vscode.ViewColumn.One);
@@ -39,7 +53,7 @@ export class ShieldPanel {
 
   private constructor(
     extensionUri: vscode.Uri,
-    onMessage: (message: ShieldPanelMessage) => void,
+    onMessage: (message: ShieldPanelMessage | ProfilePanelMessage) => void,
   ) {
     this.onDidReceive = onMessage;
     this.panel = vscode.window.createWebviewPanel(
@@ -103,6 +117,19 @@ export class ShieldPanel {
       </thead>
       <tbody></tbody>
     </table>
+  </section>
+  <section class="flame">
+    <div class="section-head">
+      <span>Flame graph</span>
+      <div class="log-controls">
+        <select id="flame-service"><option value="">service...</option></select>
+        <input id="flame-duration" type="number" min="500" max="60000" step="500" value="3000" />
+        <span class="dim">ms</span>
+        <button id="flame-start">Sample profile</button>
+        <span id="flame-note" class="dim">entry point: engine /ops/profile sampler (needs http.profile_enabled + http.profile_token)</span>
+      </div>
+    </div>
+    <div id="flame-view"></div>
   </section>
   <section class="logs">
     <div class="section-head">
@@ -170,6 +197,14 @@ export class ShieldPanel {
 
   postServices(entries: LuaServiceEntry[]): void {
     void this.panel.webview.postMessage({ type: 'services', entries });
+  }
+
+  postProfileReport(report: ProfileResponse): void {
+    void this.panel.webview.postMessage({ type: 'profileReport', report });
+  }
+
+  postProfileNote(note: string): void {
+    void this.panel.webview.postMessage({ type: 'profileNote', note });
   }
 
   dispose(): void {

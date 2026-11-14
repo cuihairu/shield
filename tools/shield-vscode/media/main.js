@@ -270,6 +270,117 @@
     els.logView.scrollTop = els.logView.scrollHeight;
   }
 
+  // ---------------------------------------------------------- flame graph
+
+  // Flame graph entry point: renders the engine sampler's call tree as an
+  // icicle list (one row per frame, width-proportional pct bar, expandable).
+  const flame = {
+    service: '',
+    durationMs: 3000,
+    roots: [],
+    expanded: new Set(),
+    note: '',
+  };
+
+  const flameEls = {
+    service: document.getElementById('flame-service'),
+    duration: document.getElementById('flame-duration'),
+    start: document.getElementById('flame-start'),
+    note: document.getElementById('flame-note'),
+    view: document.getElementById('flame-view'),
+  };
+
+  function renderFlame() {
+    flameEls.note.textContent = flame.note;
+    flameEls.view.textContent = '';
+    if (flame.roots.length === 0) {
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    const walk = (node, depth, path) => {
+      const row = document.createElement('div');
+      row.className = 'flame-row';
+      row.style.paddingLeft = depth * 14 + 'px';
+
+      const hasKids = node.children && node.children.length > 0;
+      const id = path + '|' + node.name + '#' + node.hits;
+      if (hasKids) {
+        const caret = document.createElement('span');
+        caret.className = 'flame-caret';
+        caret.textContent = flame.expanded.has(id) ? '▾ ' : '▸ ';
+        row.appendChild(caret);
+      } else {
+        row.appendChild(document.createTextNode('  '));
+      }
+
+      const bar = document.createElement('span');
+      bar.className = 'flame-bar';
+      const width = Math.max(1, Math.min(100, node.pct));
+      bar.style.width = width * 0.9 + '%';
+      row.appendChild(bar);
+
+      const label = document.createElement('span');
+      label.className = 'flame-label';
+      label.textContent =
+        node.pct.toFixed(1) + '%  ' + node.hits + '  ' +
+        node.name + (node.source ? '  (' + node.source + ':' + node.line + ')' : '');
+      row.appendChild(label);
+
+      if (hasKids) {
+        row.addEventListener('click', () => {
+          if (flame.expanded.has(id)) {
+            flame.expanded.delete(id);
+          } else {
+            flame.expanded.add(id);
+          }
+          renderFlame();
+        });
+      }
+      frag.appendChild(row);
+      if (hasKids && flame.expanded.has(id)) {
+        node.children.forEach((kid, i) => walk(kid, depth + 1, id + '/' + i));
+      }
+    };
+    flame.roots.forEach((root, i) => walk(root, 0, String(i)));
+
+    const head = document.createElement('div');
+    head.className = 'flame-head dim';
+    head.textContent =
+      'total samples: ' +
+      (flame.totalSamples != null ? flame.totalSamples : '?');
+    flameEls.view.appendChild(head);
+    flameEls.view.appendChild(frag);
+  }
+
+  function onProfileReport(message) {
+    flame.roots = message.report.frames ?? [];
+    flame.totalSamples = message.report.total_samples;
+    flame.expanded = new Set();
+    flame.note =
+      flame.roots.length === 0
+        ? 'no samples collected (service idle or sampler unavailable)'
+        : flame.roots.length + ' root frame(s)';
+    renderFlame();
+  }
+
+  function onProfileNote(message) {
+    flame.note = message.note;
+    flameEls.note.textContent = flame.note;
+  }
+
+  flameEls.start.addEventListener('click', () => {
+    const service = flameEls.service.value;
+    if (!service) {
+      flame.note = 'pick a service first';
+      flameEls.note.textContent = flame.note;
+      return;
+    }
+    const duration = Math.max(500, Math.min(60000, Number(flameEls.duration.value) || 3000));
+    flame.note = 'sampling ' + service + ' for ' + duration + 'ms...';
+    flameEls.note.textContent = flame.note;
+    vscode.postMessage({ type: 'profileStart', service, durationMs: duration });
+  });
+
   // --------------------------------------------------------------- status
 
   function onStatus(message) {
@@ -302,9 +413,34 @@
       case 'services':
         state.entries = message.entries;
         renderServices();
+        refreshFlameServices(message.entries);
+        break;
+      case 'profileReport':
+        onProfileReport(message);
+        break;
+      case 'profileNote':
+        onProfileNote(message);
         break;
     }
   });
+
+  function refreshFlameServices(entries) {
+    const previous = flameEls.service.value;
+    flameEls.service.textContent = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'service...';
+    flameEls.service.appendChild(placeholder);
+    for (const entry of entries) {
+      const opt = document.createElement('option');
+      opt.value = entry.name;
+      opt.textContent = entry.name;
+      flameEls.service.appendChild(opt);
+    }
+    if (entries.some((e) => e.name === previous)) {
+      flameEls.service.value = previous;
+    }
+  }
 
   els.logFilter.addEventListener('input', () => {
     state.filter = els.logFilter.value;

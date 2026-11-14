@@ -34,6 +34,8 @@ export interface SessionOptions {
   ops?: {
     baseUrl: string;
     token?: string;
+    /// Separate token for the opt-in /ops/profile + /ops/eval gates.
+    profileToken?: string;
     timeoutMs?: number;
   };
   /// Fallback / supplemental process-level sampling (used when ops HTTP is
@@ -110,7 +112,12 @@ export class ShieldSession extends EventEmitter {
 
     if (this.options.ops) {
       hasFace = true;
-      this.opsClient = new OpsHttpClient(this.options.ops);
+      this.opsClient = new OpsHttpClient({
+        baseUrl: this.options.ops.baseUrl,
+        token: this.options.ops.token,
+        profileToken: this.options.ops.profileToken,
+        timeoutMs: this.options.ops.timeoutMs,
+      });
       this.servicesSource = new LuaServicesSource(
         this.opsClient,
         this.options.workspaceRoots ?? [],

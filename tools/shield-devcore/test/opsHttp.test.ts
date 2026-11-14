@@ -9,6 +9,39 @@ import {
   processGauges,
 } from '../src/sources/opsHttp.js';
 
+const PROFILE_REPORT = {
+  type: 'result',
+  data: {
+    service: 'auth',
+    duration_ms: 1000,
+    interval: 10,
+    total_samples: 100,
+    frames: [
+      {
+        what: 'function',
+        name: 'login',
+        source: 'auth.lua',
+        line: 20,
+        tail: false,
+        hits: 40,
+        pct: 40.0,
+        children: [
+          {
+            what: 'function',
+            name: 'shield.client.bind',
+            source: '=builtin',
+            line: 0,
+            tail: true,
+            hits: 12,
+            pct: 12.0,
+            children: [],
+          },
+        ],
+      },
+    ],
+  },
+};
+
 const PROM_TEXT = [
   '# HELP shield_process_rss_bytes Resident set size in bytes.',
   '# TYPE shield_process_rss_bytes gauge',
@@ -229,5 +262,40 @@ describe('OpsHttpClient', () => {
     const client = new OpsHttpClient({ baseUrl: base });
     const health = await client.health();
     expect(health.ok).toBe(true);
+  });
+
+  it('drives the profile sampler with the separate profile token', async () => {
+    const seenBodies: unknown[] = [];
+    const seenAuth: string[] = [];
+    const base = await startOps((req, res) => {
+      seenAuth.push(req.headers.authorization ?? '');
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', () => {
+        seenBodies.push(JSON.parse(raw || '{}'));
+        if (seenBodies.length === 1) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'result', data: { started: true, service: 'auth' } }));
+        } else {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(PROFILE_REPORT));
+        }
+      });
+    });
+    // duration 0 -> sampleOnce waits ~300ms only.
+    const client = new OpsHttpClient({
+      baseUrl: base,
+      token: 'ops-token',
+      profileToken: 'profile-token',
+      timeoutMs: 5000,
+    });
+    const report = await client.sampleOnce('auth', 0);
+    expect(report.total_samples).toBe(100);
+    expect(report.frames?.[0].name).toBe('login');
+    expect(report.frames?.[0].children[0].pct).toBe(12.0);
+    // The start request carried the PROFILE token, not the ops token.
+    expect(seenBodies[0]).toEqual({ action: 'start', service: 'auth', duration_ms: 0 });
+    expect(seenAuth[0]).toBe('Bearer profile-token');
+    expect(seenAuth[1]).toBe('Bearer profile-token');
   });
 });

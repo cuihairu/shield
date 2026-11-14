@@ -12,7 +12,11 @@ import {
   type SessionStatus,
 } from '@shield/shield-devcore';
 
-import { ShieldPanel, type ShieldPanelMessage } from './panel.js';
+import {
+  ShieldPanel,
+  type ProfilePanelMessage,
+  type ShieldPanelMessage,
+} from './panel.js';
 import { ShieldStatusBar } from './statusBar.js';
 
 export class ShieldController implements vscode.Disposable {
@@ -35,6 +39,7 @@ export class ShieldController implements vscode.Disposable {
     const config = vscode.workspace.getConfiguration('shield');
     const opsUrl = config.get<string>('opsUrl', 'http://127.0.0.1:8080');
     const opsToken = config.get<string>('opsToken', '');
+    const profileToken = config.get<string>('profileToken', '');
     const logFile = config.get<string>('logFile', '');
     const procPid = config.get<number>('procPid', 0);
     const metricsIntervalMs = config.get<number>('metricsIntervalMs', 2000);
@@ -45,7 +50,12 @@ export class ShieldController implements vscode.Disposable {
     const session = new ShieldSession({
       ops:
         opsUrl && opsUrl.length > 0
-          ? { baseUrl: opsUrl, token: opsToken || undefined, timeoutMs: 3000 }
+          ? {
+              baseUrl: opsUrl,
+              token: opsToken || undefined,
+              profileToken: profileToken || undefined,
+              timeoutMs: 3000,
+            }
           : undefined,
       logFile:
         logFile && logFile.length > 0 ? { path: logFile, intervalMs: 500 } : undefined,
@@ -107,14 +117,15 @@ export class ShieldController implements vscode.Disposable {
   async openPanel(): Promise<void> {
     const panel = ShieldPanel.createOrShow(
       this.context.extensionUri,
-      (message: ShieldPanelMessage) => void this.handlePanelMessage(message),
+      (message: ShieldPanelMessage | ProfilePanelMessage) =>
+        void this.handlePanelMessage(message),
     );
     const session = this.session;
     panel.postNode(this.nodeLabel());
     panel.postStatus(session?.status ?? 'detached');
   }
 
-  async handlePanelMessage(message: ShieldPanelMessage): Promise<void> {
+  async handlePanelMessage(message: ShieldPanelMessage | ProfilePanelMessage): Promise<void> {
     if (message.type === 'openScript') {
       try {
         const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(message.path));
@@ -124,6 +135,39 @@ export class ShieldController implements vscode.Disposable {
           `Shield: cannot open script ${message.path} (not in this workspace?)`,
         );
       }
+      return;
+    }
+    if (message.type === 'profileStart') {
+      await this.runProfile(message);
+    }
+  }
+
+  /// Flame-graph entry point: drive the engine's /ops/profile sampler
+  /// (start -> wait duration -> report). Errors surface as a panel note,
+  /// not a modal: the sampler is opt-in and commonly gated (401/404/429).
+  private async runProfile(message: ProfilePanelMessage): Promise<void> {
+    const panel = this.panel();
+    const ops = this.session?.ops;
+    if (!panel || !ops) {
+      panel?.postProfileNote('attach to a node first (no ops face)');
+      return;
+    }
+    try {
+      const report = await ops.sampleOnce(message.service, message.durationMs);
+      panel.postProfileReport(report);
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const hint =
+        status === 404
+          ? 'profile endpoint not registered (enable http.profile_enabled=true and set http.profile_token)'
+          : status === 401
+            ? 'profile token mismatch (set shield.profileToken to http.profile_token)'
+            : status === 429
+              ? 'profile start cooldown active'
+              : err instanceof Error
+                ? err.message
+                : String(err);
+      panel.postProfileNote(`profile failed: ${hint}`);
     }
   }
 

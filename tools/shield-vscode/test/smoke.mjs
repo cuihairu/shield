@@ -190,6 +190,47 @@ const opsServer = http.createServer((req, res) => {
     );
     return;
   }
+  if (req.url === '/ops/profile' && req.method === 'POST') {
+    const auth = req.headers.authorization ?? '';
+    if (auth !== 'Bearer profile-tok') {
+      res.writeHead(401);
+      res.end(JSON.stringify({ type: 'error', data: 'unauthorized' }));
+      return;
+    }
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const body = JSON.parse(raw || '{}');
+      if (body.action === 'start') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'result', data: { started: true, service: body.service } }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          type: 'result',
+          data: {
+            service: body.service ?? 'auth',
+            total_samples: 42,
+            frames: [
+              {
+                what: 'function',
+                name: 'login',
+                source: 'auth.lua',
+                line: 20,
+                tail: false,
+                hits: 20,
+                pct: 47.6,
+                children: [],
+              },
+            ],
+          },
+        }),
+      );
+    });
+    return;
+  }
   res.writeHead(404);
   res.end('{}');
 });
@@ -216,6 +257,7 @@ const port = await listen();
 globalThis.shieldSmokeConfig = {
   opsUrl: `http://127.0.0.1:${port}`,
   opsToken: '',
+  profileToken: 'profile-tok',
   logFile: '',
   procPid: 0,
   metricsIntervalMs: 100,
@@ -263,6 +305,17 @@ for (const listener of panel.listeners) {
 }
 await waitFor(() => openedDocs.includes(openPath), 'script opened in editor');
 console.log('ok: openScript message opens the file in the editor');
+
+// flame-graph entry point: the webview posts profileStart; the controller
+// drives /ops/profile start+report through devcore and posts the report back.
+for (const listener of panel.listeners) {
+  listener({ type: 'profileStart', service: 'auth', durationMs: 0 });
+}
+await waitFor(
+  () => panel.posted.some((m) => m.type === 'profileReport' && m.report.total_samples === 42),
+  'profile report posted',
+);
+console.log('ok: profileStart round-trips through /ops/profile into the panel');
 
 await registered.get('shield.detach')();
 assert.equal(statusItems[0].text, '$(shield) shield', 'status bar back to detached');
