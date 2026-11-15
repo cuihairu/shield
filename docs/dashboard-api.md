@@ -180,7 +180,8 @@ JSON endpoint per FIX-WEB-01. The metric families it must reconcile against
 are `shield_gateway_connections_total{port}`,
 `shield_gateway_rejections_total{port,reason}`,
 `shield_gateway_active_sessions{port}`,
-`shield_gateway_rate_limited_messages_total{port}`. Process-level resource
+`shield_gateway_rate_limited_messages_total{port}`,
+`shield_gateway_dropped_messages_total{port,reason}`. Process-level resource
 gauges (FIX-WEB-09) are also part of the family list and emitted on Linux:
 `shield_process_rss_bytes` (gauge, bytes), `shield_process_threads`
 (gauge, count), `shield_process_open_fds` (gauge, count),

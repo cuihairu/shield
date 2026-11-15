@@ -385,6 +385,9 @@ void TcpSession::do_receive() {
                         return;
                     }
                     if (result.should_drop()) {
+                        if (self->callbacks_.on_dropped) {
+                            self->callbacks_.on_dropped(result);
+                        }
                         continue;
                     }
                     // Per-connection ingress rate limit. Charged per

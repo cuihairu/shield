@@ -171,6 +171,19 @@ public:
         return rate_limited_total_.load(std::memory_order_relaxed);
     }
 
+    /// @brief Ingress messages dropped by protocol dispatch because their
+    ///        route was not in the route table, same cumulative scope as
+    ///        rate_limited_messages_total().
+    uint64_t unknown_route_drops_total() const {
+        return unknown_route_drops_total_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Ingress messages dropped because their route table entry is
+    ///        configured with the Drop action, same cumulative scope.
+    uint64_t configured_drops_total() const {
+        return configured_drops_total_.load(std::memory_order_relaxed);
+    }
+
     /// @brief Find session by ID
     std::shared_ptr<Session> find_session(SessionId id) const;
 
@@ -239,6 +252,8 @@ private:
     std::atomic<uint64_t> conn_limit_rejects_total_{0};
     std::atomic<uint64_t> ip_limit_rejects_total_{0};
     std::atomic<uint64_t> rate_limited_total_{0};
+    std::atomic<uint64_t> unknown_route_drops_total_{0};
+    std::atomic<uint64_t> configured_drops_total_{0};
 
     // TLS state. tls_context_ is null for a plaintext listener. The
     // handshake counters live behind a shared_ptr so in-flight per-connection

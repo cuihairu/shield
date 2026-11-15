@@ -192,6 +192,9 @@ actors:
 - 拒绝与放行的观测走 `/ops/metrics`：`shield_gateway_rejections_total{
   port,reason}`（blocked_ip / connection_limit / ip_limit）与
   `shield_gateway_connections_total`、`shield_gateway_active_sessions`。
+- 协议分发丢弃的观测走同一抓取面：`shield_gateway_dropped_messages_total{
+  port,reason}`，`reason` ∈ unknown_route（路由表外的 route）/
+  configured_drop（表内配置 Drop 动作）——listener 级累计计数器。
 
 限流与黑名单的分工：**黑名单挡特定来源**（已知的攻击源/刷子），
 **限流挡总量**（合法但嘈杂的客户端）。两者都按连接生效，都不替代业务层

@@ -197,6 +197,9 @@ Semantic essentials:
 - Rejection and admission observability via `/ops/metrics`: `shield_gateway_rejections_total{
   port,reason}` (blocked_ip / connection_limit / ip_limit) plus
   `shield_gateway_connections_total` and `shield_gateway_active_sessions`.
+- Protocol-dispatch drop observability via the same scrape: `shield_gateway_dropped_messages_total{
+  port,reason}` with reason `unknown_route` (route not in the route table) or
+  `configured_drop` (route table entry whose action is Drop) — listener-level cumulative counters.
 
 The division of labor: the **blocklist blocks specific sources** (known attackers/abusers);
 **rate limiting blocks volume** (legitimate but noisy clients). Both act per connection, and neither replaces

@@ -491,6 +491,23 @@ std::shared_ptr<Session> TcpListener::adopt_connection(
             user_rate_limited();
         }
     };
+    // Cumulative protocol-drop counters, same pattern: an unknown route and
+    // a route configured as Drop are counted separately so a scrape can
+    // tell misconfigured clients from hostile traffic.
+    auto user_on_dropped = callbacks.on_dropped;
+    callbacks.on_dropped =
+        [this,
+         user_on_dropped](const shield::transport::DispatchResult& result) {
+            if (result.route == nullptr) {
+                unknown_route_drops_total_.fetch_add(1,
+                                                     std::memory_order_relaxed);
+            } else {
+                configured_drops_total_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (user_on_dropped) {
+                user_on_dropped(result);
+            }
+        };
     // Store session. stop() sets stopping_ before it takes sessions_mutex_
     // to snapshot, so once we hold the lock and stopping_ is clear, every
     // later stop()/destructor will see this session in its snapshot. If

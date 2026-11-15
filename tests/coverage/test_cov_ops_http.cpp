@@ -2609,6 +2609,12 @@ BOOST_AUTO_TEST_CASE(GatewayMetricsEmittedFromListenerRegistry) {
                     std::string::npos);
         BOOST_CHECK(body.find("shield_gateway_rate_limited_messages_total{" +
                               port_label + "} 0") != std::string::npos);
+        BOOST_CHECK(body.find("shield_gateway_dropped_messages_total{" +
+                              port_label + ",reason=\"unknown_route\"} 0") !=
+                    std::string::npos);
+        BOOST_CHECK(body.find("shield_gateway_dropped_messages_total{" +
+                              port_label + ",reason=\"configured_drop\"} 0") !=
+                    std::string::npos);
         BOOST_CHECK(body.find("# TYPE shield_gateway_connections_total "
                               "counter") != std::string::npos);
     }

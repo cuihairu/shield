@@ -206,6 +206,10 @@ struct SessionCallbacks {
     // Called once per ingress message dropped by the per-connection rate
     // limit (runs on the session's IO strand; keep it cheap).
     std::function<void()> on_rate_limited;
+    // Called once per ingress message dropped by protocol dispatch (an
+    // unknown route, or a route table entry configured with the Drop
+    // action). Runs on the session's IO strand; keep it cheap.
+    std::function<void(const shield::transport::DispatchResult&)> on_dropped;
     std::function<std::unique_ptr<shield::transport::ProtocolPipeline>()>
         create_protocol_pipeline;
 };

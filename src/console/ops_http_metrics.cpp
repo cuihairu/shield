@@ -603,6 +603,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
         std::vector<std::pair<std::string, double>> active_samples;
         std::vector<std::pair<std::string, double>> rate_limited_samples;
         std::map<std::string, double> rejections;
+        std::map<std::string, double> drops;
         for (const auto* listener :
              shield::net::ListenerRegistry::instance().snapshot()) {
             const std::string port =
@@ -622,9 +623,17 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             rate_limited_samples.emplace_back(
                 "port=\"" + port + "\"",
                 static_cast<double>(listener->rate_limited_messages_total()));
+            drops["port=\"" + port + "\",reason=\"unknown_route\""] +=
+                static_cast<double>(listener->unknown_route_drops_total());
+            drops["port=\"" + port + "\",reason=\"configured_drop\""] +=
+                static_cast<double>(listener->configured_drops_total());
         }
         for (const auto& [labels, value] : rejections) {
             rejection_samples.emplace_back(labels, value);
+        }
+        std::vector<std::pair<std::string, double>> drop_samples;
+        for (const auto& [labels, value] : drops) {
+            drop_samples.emplace_back(labels, value);
         }
         prom_emit_group(out, "shield_gateway_connections_total", "counter",
                         "Connections that completed the TCP accept step",
@@ -638,6 +647,10 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             out, "shield_gateway_rate_limited_messages_total", "counter",
             "Ingress messages dropped by the per-connection rate limit",
             rate_limited_samples);
+        prom_emit_group(out, "shield_gateway_dropped_messages_total", "counter",
+                        "Ingress messages dropped by protocol dispatch "
+                        "(unknown route or configured Drop)",
+                        drop_samples);
         // TLS handshake counters (docs/tls-design.md). Plaintext-only
         // deployments emit no samples for these groups at all.
         std::vector<std::pair<std::string, double>> tls_handshake_samples;

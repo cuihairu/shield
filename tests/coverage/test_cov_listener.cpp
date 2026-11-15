@@ -689,6 +689,140 @@ BOOST_AUTO_TEST_CASE(ListenerCounterWithoutUserRateLimitedCallback) {
     io.run_for(100ms);
 }
 
+// make_json_pipeline plus one route whose table entry is configured with
+// the Drop action, so a single wire feed can drive both drop reasons:
+// "nope" is not in the table (unknown route), "optout" is (configured Drop).
+std::unique_ptr<ProtocolPipeline> make_drop_pipeline() {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .direction = RouteDirection::ClientToServer,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = true},
+    });
+    routes.add(RouteEntry{
+        .route_id = 1002,
+        .direction = RouteDirection::ClientToServer,
+        .debug_name = "optout",
+        .policy = RoutePolicy{.action = RouteAction::Drop},
+    });
+
+    BodyCodecRegistry codecs;
+    codecs.add(1, std::make_unique<JsonBodyCodec>());
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+    profile.unknown_route_action = RouteAction::Drop;
+
+    return std::make_unique<ProtocolPipeline>(
+        std::move(profile), std::move(routes), std::move(codecs));
+}
+
+// Protocol dispatch drops (unknown route / configured Drop) surface through
+// the per-listener cumulative counters and the user on_dropped callback.
+BOOST_AUTO_TEST_CASE(ListenerProtocolDropCounters) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    std::atomic<int> packets{0};
+    std::atomic<int> dropped{0};
+    std::atomic<int> unknown_route{0};
+    std::atomic<int> configured_drop{0};
+
+    SessionCallbacks callbacks;
+    callbacks.create_protocol_pipeline = [] { return make_drop_pipeline(); };
+    callbacks.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
+        ++packets;
+    };
+    callbacks.on_dropped = [&](const DispatchResult& result) {
+        ++dropped;
+        if (result.route == nullptr) {
+            ++unknown_route;
+        } else {
+            ++configured_drop;
+        }
+    };
+
+    TcpListener listener(io, port, callbacks);
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(150ms);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    auto local = make_drop_pipeline();
+    std::vector<std::uint8_t> wire;
+    for (const char* route_name : {"login", "nope", "optout"}) {
+        auto f = encode_packet(*local, std::string(R"({"route":")") +
+                                           route_name + R"(","payload":{}})");
+        wire.insert(wire.end(), f.begin(), f.end());
+    }
+    c1.send(wire);
+    io.run_for(200ms);
+
+    // Only the "login" frame reaches on_packet; the other two are dropped
+    // by protocol dispatch without breaking the connection.
+    BOOST_CHECK_EQUAL(packets.load(), 1);
+    BOOST_CHECK_EQUAL(dropped.load(), 2);
+    BOOST_CHECK_EQUAL(unknown_route.load(), 1);
+    BOOST_CHECK_EQUAL(configured_drop.load(), 1);
+    BOOST_CHECK_EQUAL(listener.unknown_route_drops_total(), 1u);
+    BOOST_CHECK_EQUAL(listener.configured_drops_total(), 1u);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
+// Same protocol-drop paths with no user-facing on_dropped: the listener
+// wrapper still charges the cumulative counters (the skip-user-callback
+// arm).
+BOOST_AUTO_TEST_CASE(ListenerProtocolDropCountersWithoutUserCallback) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    std::atomic<int> packets{0};
+    SessionCallbacks callbacks;
+    callbacks.create_protocol_pipeline = [] { return make_drop_pipeline(); };
+    callbacks.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
+        ++packets;
+    };
+    // Deliberately no callbacks.on_dropped.
+
+    TcpListener listener(io, port, callbacks);
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(150ms);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    auto local = make_drop_pipeline();
+    std::vector<std::uint8_t> wire;
+    for (const char* route_name : {"login", "nope", "optout"}) {
+        auto f = encode_packet(*local, std::string(R"({"route":")") +
+                                           route_name + R"(","payload":{}})");
+        wire.insert(wire.end(), f.begin(), f.end());
+    }
+    c1.send(wire);
+    io.run_for(200ms);
+
+    BOOST_CHECK_EQUAL(packets.load(), 1);
+    BOOST_CHECK_EQUAL(listener.unknown_route_drops_total(), 1u);
+    BOOST_CHECK_EQUAL(listener.configured_drops_total(), 1u);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_CASE(BroadcastReachesAllSessions) {
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);
