@@ -14,6 +14,17 @@ vcpkg_from_github(
         cmake-4.4.patch # https://github.com/mongodb/mongo-c-driver/commit/ea1b54791ec2f1aafb665f98af6cc9dd21116782
 )
 file(WRITE "${SOURCE_PATH}/VERSION_CURRENT" "${VERSION}")
+
+# MSVC 14.52 (VS 18 2026, GitHub windows runner image) reports C4047 on several
+# mongo-c-driver 2.3.1 call sites (e.g. src/libmongoc/src/mongoc/mcd-nsinfo.c)
+# where a pointer is passed to a bool parameter. Upstream treats integral/pointer
+# conversions as a hard error via MongoC-Warnings.cmake's `msvc:/we4047`, so the
+# new compiler's stricter diagnostics break the port build. The type mismatch is
+# upstream's; this repo's workaround downgrades C4047 to a level-1 warning in
+# the vendored copy only. Recheck when bumping the vcpkg baseline past 2.3.1.
+vcpkg_replace_string("${SOURCE_PATH}/build/cmake/MongoC-Warnings.cmake"
+    "msvc:/we4047" "msvc:/w14047")
+
 file(TOUCH "${SOURCE_PATH}/src/utf8proc-editable")
 file(GLOB vendored_libs "${SOURCE_PATH}/src/utf8proc-*" "${SOURCE_PATH}/src/zlib-*/*.h")
 file(REMOVE_RECURSE ${vendored_libs})
