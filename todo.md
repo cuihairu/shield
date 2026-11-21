@@ -428,7 +428,7 @@
 - `include/shield/core/service_message.hpp:1` 定义 `namespace shield::lua` 类型；core 头承载 Lua 命名空间契约是为了打破依赖，但路径与命名空间、服务实现所在层不一致。
 - `src/plugin/schema_validator.hpp` 是与实现同目录的私有头，而其他模块契约集中放在 `include/shield/`；插件公共宿主 API 与内部校验器的可见性边界混在同一目录类型。
 - 仓库根残留大量 `.gcov` 覆盖产物（例如 actor.hpp.gcov:1），与 `.cache/`、`build/`、`Testing/` 生成物混在源码工作区，掩盖源码清单。`build-cov/` 下的 `coverage.txt` 为本地覆盖率报告生成物，不应纳入提交；如需保留权威报告，请放入 `build-cov/` 并在 `.gitignore` 中登记。
-- [ ] 审核发现：本轮 diff 未见问题（2581295b..HEAD）
+- [x] 审核发现：本轮 diff 未见问题（2581295b..HEAD）。本轮范围含 LANG-AUTO-001 自动跳转主题（77caa15）与 vcpkg overlay 修 MSVC 14.52 C4047（6cb9b10 libbson、0c06c68 mongo-c-driver）：9 文件全审，locale 判定表 46 断言覆盖 choice 空串/首页四形态/zh 侧幂等防重定向循环，vcpkg_replace_string 锚点缺失即 FATAL_ERROR 显式失败，非 MSVC 平台 msvc: 前缀 no-op（ubuntu/macos 腿绿证实）。
 
 ## Codex 深审发现（2026-11-13，luna profile 近5 commit 审核；2026-11-14 已修 8/8）
 
