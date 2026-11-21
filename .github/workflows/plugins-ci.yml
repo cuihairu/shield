@@ -95,10 +95,12 @@ jobs:
       - name: Configure
         shell: bash
         env:
-          # ports-overlay carries an in-repo copy of the mongo-c-driver port
-          # including upstream's cmake-4.4.patch: the pinned vcpkg commit
-          # (vcpkgGitCommitId / builtin-baseline) predates that fix, and its
-          # TRY_COMPILE CMAKE_FLAGS form fails to configure under CMake 4.
+          # ports-overlay carries in-repo copies of the mongo-c-driver and
+          # libbson ports: mongo-c-driver ships upstream's cmake-4.4.patch
+          # (the pinned vcpkg commit predates it, and its TRY_COMPILE
+          # CMAKE_FLAGS form fails to configure under CMake 4), and the libbson
+          # copy downgrades /we4047 to a warning (MSVC 14.52 reports C4047 on
+          # validate.c's mlib_check pointer call sites, see portfile.cmake).
           VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/ports-overlay
         run: |
           CMAKE_ARGS=(
